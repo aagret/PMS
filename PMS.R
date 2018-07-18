@@ -17,6 +17,10 @@ p0 <-  trades[Date == min(Date), .(Date, Ticker, Quantity, Cost)]
 
 t1 <- trades[Date == min(Date[Date != min(Date)]), ]
 
+t1 <- averagePosition(t1)
+
+p1 <- updatePortfolio(p0, t1)
+
 
 
 # calc new portfolio
@@ -46,5 +50,21 @@ updatePortfolio <- function(port= portfolio, trad= trades) {
     
 }
 
+# si multi daily trades il faut changer de logique et moyener les trades avant fusion
 
-p1 <- updatePortfolio(p0, t1)
+averagePosition <- function(trad= trades) {
+    
+    single <- trad[, .SD[.N == 1], by= Ticker]
+    multi  <- trad[, .SD[.N != 1], by= Ticker]
+    
+    #average cost and sum postion
+    multi[, ':=' (Date= unique(trad$Date),
+                  Cost= sum(Quantity[Quantity > 0] * Cost[Quantity > 0]) / sum(Quantity[Quantity > 0]),
+                  Quantity= sum(Quantity))
+          , by= Ticker]
+    
+    multi <- rbind(single, unique(multi))
+    
+    setkey(multi, Date, Ticker)
+}
+
