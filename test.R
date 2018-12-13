@@ -39,11 +39,11 @@ avg <- function(Q= Quantity, P= Price) {
         PnL[is.na(PnL)] <- 0
         PnL <- cumsum(PnL)
         
-        data.table(Position, Cost, PnL)
+        #data.table(round(Position, 2), round(Cost, 2), round(PnL,2))
         
     }
     
-    data.table(Position, Cost, PnL)
+    data.table(round(Position, 4), round(Cost, 4), round(PnL,2))
     
 }
 
@@ -51,8 +51,9 @@ avg <- function(Q= Quantity, P= Price) {
 library(readxl)
 library(data.table)
 library(plyr)
+library(TTR)
 
-trades <- setDT(read_xlsx(path = "/home/Alexandre/DEQ_Trades/FundClientTrades.xlsx"))[,1:6]
+trades <- setDT(read_xlsx(path = "m:/Alexandre/DEQ_Trades/FundClientTrades.xlsx"))[,1:6]
 colnames(trades) <- c("Port","Ticker","Trade","Quantity","Price","Date")
 
 trades <- trades[Port == "DEQ",]
@@ -99,7 +100,6 @@ setkey(newPort, Date, Ticker)
 pn <- newPort[Date == max(Date),]
 
 
-
 # get historical data
 
 library(Rblpapi)
@@ -107,4 +107,81 @@ library(Rblpapi)
 tic   <- unique(newPort$Ticker)
 start <- min(unique(newPort$Date))
 
-prices <- bdh(tic, "PX_LAST", start)
+con <- blpConnect()
+
+prices <- ldply(bdh(tic, "PX_LAST", start, Sys.Date() -1))
+colnames(prices) <- c("Ticker","Date","Last")
+setDT(prices)
+setkey(prices, Ticker)
+
+cur    <- cbind(tic, bdp(tic, "CRNCY"))
+colnames(cur) <- c("Ticker", "Cur")
+setDT(cur)
+cur[, Ticker:=as.character(Ticker)]
+setkey(cur, Ticker)
+
+prices <- cur[prices]
+prices[, Cur:= toupper(Cur)]
+
+prices <- prices[complete.cases(prices)]
+
+tic    <- unique(paste0(toupper(as.character(cur$Cur)) , "EUR Curncy"))
+fx     <- ldply(bdh(tic, "BID", start))
+
+blpDisconnect(con)
+
+colnames(fx) <- c("Cur", "Date", "Bid")
+setDT(fx)
+
+fx[, Cur:= gsub("EUR Curncy", "", Cur)]
+#fx[Cur == "GBP", Cur:= "GBp"]
+
+setkey(fx, Date, Cur)
+setkey(prices, Date, Cur)
+
+prices <- fx[prices]
+prices[Cur == "EUR", Bid:= 1L]
+
+
+
+#lastPrice <- prices[, .SD[.N], by= Ticker]
+#prevPrice <- prices[, .SD[.N-1], by= Ticker]
+
+setkey(prices, Date, Ticker)
+prices[, d.Last:= c(0, ROC(Last)[-1]), by= Ticker]
+prices[, d.Bid:=  c(0, ROC(Bid)[-1]),  by= Ticker]
+
+dts <- unique(prices$Date)
+
+pos <- list()
+
+for (i in 1:length(dts)) {
+    
+    if (nrow(newPort[Date == dts[i],]) == 0) {
+        pos[[i]] <- pos[[i-1]]
+    } else{
+        pos[[i]] <- newPort[Date == dts[i], ]
+    }
+   
+    pos[[i]]$Date <- dts[i]
+}
+   
+pos <- rbindlist(pos)
+setkey(pos, Date, Ticker)
+
+pos <- prices[pos]
+
+
+pos[ , Value:= Position * Last]
+pos[Cur %in% c("GBP", "GBp"), Value:= Value / 100]
+pos[grepl("Index", Ticker), Value:= Value * 50]
+pos[ ,EurValue:= Position * Last * Bid]
+
+pos[grepl("Index", Ticker), ':=' (Value= Value* 50,
+                                EurValue= EurValue *50)]
+
+pos[ , Wght:= EurValue / sum(EurValue, na.rm= TRUE), by= Date]
+    
+pos[, Ctr:= (d.Last * d.Bid) * Wght]
+
+#exp(cumsum(pos[, sum(Ctr, na.rm=TRUE), by= Date]$V1))
